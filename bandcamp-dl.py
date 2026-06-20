@@ -268,6 +268,10 @@ def download_item(identity, format, ignore_expired, item):
             )
             if not ignore_expired:
                 sys.exit(1)
+        except Exception as e:
+            process.console.log(
+                "{} - {}: caught exception: {}", item.artist, item.title, e
+            )
 
 
 
