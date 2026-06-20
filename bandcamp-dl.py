@@ -228,7 +228,7 @@ def already_downloaded(item):
                 )
                 os.remove(g[0])
                 return False
-        progress(g[0], skip=True)
+        progress.console.log("{}: already downloaded".format(item_to_str(item)))
         return True
     else:
         return False
@@ -252,7 +252,6 @@ def item_to_str(item) -> str:
 def download_item(identity, format, ignore_expired, item):
     with progress:
         if already_downloaded(item):
-            progress.console.log("{}: already downloaded".format(item_to_str(item)))
             return
         try:
             task_id = progress.add_task("download", filename=item_to_str(item), start=False)
