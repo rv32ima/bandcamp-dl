@@ -23,8 +23,7 @@ from rich.progress import (
     Progress,
     TaskID,
     TextColumn,
-    TimeRemainingColumn,
-    TransferSpeedColumn,
+    SpinnerColumn,
 )
 
 try:
@@ -53,9 +52,7 @@ progress = Progress(
     "•",
     DownloadColumn(),
     "•",
-    TransferSpeedColumn(),
-    "•",
-    TimeRemainingColumn(),
+    SpinnerColumn(),
 )
 
 
@@ -217,7 +214,7 @@ def items(data):
 
 
 def already_downloaded(item):
-    g = glob.glob("*({})*".format(item.id))
+    g = glob.glob("downloads/*({})*".format(item.id))
     if g:
         # redownload for pre-orders / albums with new tracks: if this is a zip,
         # get the track count and compare against the item's streamable tracks
