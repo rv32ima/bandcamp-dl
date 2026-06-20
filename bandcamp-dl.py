@@ -13,7 +13,19 @@ import sys
 import urllib.parse
 import urllib.request
 import zipfile
+import signal
+from threading import Event
+from concurrent.futures import ThreadPoolExecutor
 from collections import namedtuple
+from rich.progress import (
+    BarColumn,
+    DownloadColumn,
+    Progress,
+    TaskID,
+    TextColumn,
+    TimeRemainingColumn,
+    TransferSpeedColumn,
+)
 
 try:
     import browser_cookie3
@@ -21,6 +33,9 @@ except ImportError:
     COOKIE_FN = []
 else:
     COOKIE_FN = [browser_cookie3.chrome, browser_cookie3.firefox]
+
+done_event = Event()
+
 
 
 USER_AGENT = (
@@ -31,6 +46,18 @@ CLEAR = "\033[K"
 
 Item = namedtuple("Item", ["artist", "title", "id", "download_url", "tracks"])
 
+progress = Progress(
+    TextColumn("[bold blue]{task.fields[filename]}", justify="right"),
+    BarColumn(bar_width=None),
+    "[progress.percentage]{task.percentage:>3.1f}%",
+    "•",
+    DownloadColumn(),
+    "•",
+    TransferSpeedColumn(),
+    "•",
+    TimeRemainingColumn(),
+)
+
 
 def get_identity(identity):
     if identity:
@@ -40,7 +67,8 @@ def get_identity(identity):
                 data = identity
         except binascii.Error:
             data = identity
-        return urllib.parse.quote(data, safe="")
+        return identity
+        # return urllib.parse.quote(data, safe="")
 
     for cookie_fn in COOKIE_FN:
         try:
@@ -114,8 +142,10 @@ def bc_download(url, identity, format):
     return data["download_url"]
 
 
-def download_file(item, url):
-    logging.info("download {}".format(url))
+def download_file(item, task_id, url):
+    if not os.path.isdir("downloads"):
+        os.mkdir("downloads")
+
     with urllib.request.urlopen(build_request(url)) as f:
         for x in f.headers["content-disposition"].split(";"):
             x = x.strip()
@@ -124,8 +154,10 @@ def download_file(item, url):
         split = filename.rsplit(".", 1)
         filename = "{split[0]} ({item.id}).{split[1]}".format(split=split, item=item)
         size = int(f.headers["content-length"])
+        progress.update(task_id, total=size)
         try:
-            with open(filename, "wb") as t:
+            path = os.path.join("downloads", filename)
+            with open(path, "wb") as t:
                 at = 0
                 while True:
                     buf = f.read(16 * 1024)
@@ -133,11 +165,12 @@ def download_file(item, url):
                         break
                     t.write(buf)
                     at += len(buf)
-                    progress(filename, at=at, size=size)
+                    progress.update(task_id, advance=len(buf))
+                    if done_event.is_set():
+                        raise Exception("ctrl-c invoked")
         except:  # noqa=E722
             os.remove(filename)
             raise
-
 
 def collection(identity):
     summary = bc_json("fan/2/collection_summary", identity)["collection_summary"]
@@ -210,27 +243,37 @@ def is_track(filename):
         for ext in ("flac", "mp3", "m4a", "ogg", "wav", "aiff")
     )
 
-
-def progress(item, skip=None, at=None, size=None):
+def item_to_str(item) -> str:
     if isinstance(item, Item):
         data = "{} - {}".format(item.artist, item.title)
         if item.id:
             data += " ({})".format(item.id)
     else:
         data = item
+    return data
 
-    if skip:
-        state = "already downloaded"
-    elif at:
-        state = "{}%".format(at * 100 // size)
-    else:
-        state = "starting..."
+def download_item(identity, format, ignore_expired, item):
+    with progress:
+        if already_downloaded(item):
+            progress.console.log("{}: already downloaded".format(item_to_str(item)))
+            return
+        try:
+            task_id = progress.add_task("download", filename=item_to_str(item), start=False)
+            download_file(item, task_id, bc_download(item.download_url, identity, format))
+        except ExpiredDownloadError:
+            progress.console.log(
+                "{} - {}: download expired. See https://get.bandcamp.help/hc/en-us/articles/360046095574".format(
+                    item.artist, item.title
+                )
+            )
+            if not ignore_expired:
+                sys.exit(1)
 
-    print("{}{}: {}".format(CLEAR, data, state), file=sys.stderr, end="\r", flush=True)
-    if skip or (at and at == size):
-        print(file=sys.stderr)
 
 
+def handle_sigint(executor):
+    done_event.set()
+    executor.shutdown(wait = False, cancel_futures=True)
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -262,17 +305,11 @@ if __name__ == "__main__":
         print("Failed to load identity cookie for bandcamp.com", file=sys.stderr)
         sys.exit(1)
 
-    for item in collection(identity):
-        if already_downloaded(item):
-            continue
-        progress(item)
-        try:
-            download_file(item, bc_download(item.download_url, identity, args.format))
-        except ExpiredDownloadError:
-            print(
-                "{} - {}: download expired. See https://get.bandcamp.help/hc/en-us/articles/360046095574".format(
-                    item.artist, item.title
-                )
-            )
-            if not args.ignore_expired:
-                sys.exit(1)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        signal.signal(signal.SIGINT, lambda sig, frame: handle_sigint(pool))
+        for item in collection(identity):
+            if done_event.is_set():
+                break
+            pool.submit(download_item, identity, args.format, args.ignore_expired, item)
+
+        
