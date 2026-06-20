@@ -309,7 +309,7 @@ if __name__ == "__main__":
         print("Failed to load identity cookie for bandcamp.com", file=sys.stderr)
         sys.exit(1)
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=1) as pool:
         signal.signal(signal.SIGINT, lambda sig, frame: handle_sigint(pool))
         for item in collection(identity):
             if done_event.is_set():
